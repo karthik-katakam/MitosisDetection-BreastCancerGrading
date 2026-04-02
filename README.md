@@ -8,7 +8,7 @@
 
 ## Overview
 
-Mitotic count is a core component of the **Nottingham Grading System** for breast cancer classification. Manual counting under a microscope is slow, semi-quantitative, and prone to inter-observer variability. This project automates mitosis detection on WSIs using **Faster R-CNN** (via Detectron2), trained on 56,258 annotated tiles, achieving an **F1 score of 84%**.
+Mitotic count is a core component of the **Nottingham Grading System** for breast cancer classification. Manual counting under a microscope is slow, semi-quantitative, and prone to inter-observer variability. This project automates mitosis detection on WSIs using **Faster R-CNN** and **YOLOv5**, trained on 56,258 annotated tiles, achieving an **F1 score of 84%**.
 
 The system is integrated into **CADD4MBC** — a web-based platform for WSI upload, annotation, and diagnostic visualization.
 
@@ -21,33 +21,31 @@ WSI (.tiff)
     │
     ▼
 [1. Tile Extraction]
-    Break WSI into tiles (e.g. 992×992 px), named {x}_{y}.png
+    Break WSI into tiles (500×500 px), named {x}_{y}.png
     │
     ▼
-[2. Annotation & Mask Generation]  ◄── MaskGenerator-Copy1.ipynb
-    Load CADD4MBC JSON annotations per tile
-    Generate binary masks using polygon fill (cv2.fillPoly)
+[2. Annotation via CADD4MBC]
+    Pathologists annotate mitotic figures tile by tile
+    Annotations exported as JSON files
     │
     ▼
-[3. Dataset Pipeline]  ◄── Pipeline_notebook_for_preparing_dataset-video-final.ipynb
+[3. Mask Generation]  ◄── MaskGenerator-Copy1.ipynb
+    Generate binary masks from JSON polygon annotations
+    │
+    ▼
+[4. Dataset Pipeline]  ◄── Pipeline_notebook_for_preparing_dataset-video-final.ipynb
     Organize tiles + masks across slides (T98, T120, T121, ...)
-    Convert annotations to COCO format for Detectron2
-    Build train/test split text files
+    Convert annotations to COCO format (Faster R-CNN) / .txt format (YOLOv5)
     │
     ▼
-[4. Training — Faster R-CNN]  ◄── Mitosis_Final.ipynb / KmitMitosDetectron-KmitData_test.ipynb
-    Train Faster R-CNN X-101-FPN on annotated mitosis tiles
-    Evaluate on KMIT dataset, MITOS-12, MITOS-14, Madhubushi
+[5. Training]  ◄── Mitosis_Final.ipynb / KmitMitosDetectron-KmitData_test.ipynb
+    Train Faster R-CNN X-101-FPN and YOLOv5 on annotated tiles
+    Evaluate on KMIT, MITOS-12, MITOS-14, TUPAC datasets
     │
     ▼
-[5. Inference on WSI]
-    Run predictor tile-by-tile across the full slide
-    Apply score threshold, draw bounding boxes
-    Compute Precision, Recall, F1
-    │
-    ▼
-[6. Visualization via CADD4MBC Web Platform]
-    Upload WSI → view detections overlaid on slide in browser
+[6. Inference & Visualization on CADD4MBC]
+    Run predictions tile-by-tile across the full WSI
+    View detections overlaid on slide in the browser
 ```
 
 ---
@@ -56,69 +54,90 @@ WSI (.tiff)
 
 ```
 MitosisDetection/
+├── Images/
+│   ├── Fig1_CADD4MBC_WSI_Batches.png
+│   ├── Fig2_CADD4MBC_Mitosis_Annotation.png
+│   ├── Fig3_Generated_Mask_and_Annotations.png
+│   ├── Fig4_COCO_Format_Annotation.png
+│   ├── Fig5_Single_Mitosis_Detection_FasterRCNN.png
+│   ├── Fig6_Mitosis_Detection_on_Tiles_FasterRCNN.png
+│   └── Fig7_Mitosis_Detection_YOLOv5_WSI.png
+│
 ├── MaskGenerator-Copy1.ipynb                                    # JSON annotation → binary mask generation
 ├── Pipeline_notebook_for_preparing_dataset-video-final.ipynb    # Dataset prep & COCO format conversion
 ├── Mitosis_Final.ipynb                                          # Main training & evaluation notebook
 ├── KmitMitosDetectron-KmitData_test.ipynb                       # Testing on KMIT institutional dataset
 │
 └── Dataset/
-    ├── cadd_json_files/
-    │   └── <slide_id>/<batch>/<x>_<y>.json   # Per-tile CADD4MBC annotations
-    ├── filtered_images/
-    │   └── <slide_id>/                        # Extracted WSI tiles (.jpg / .png)
-    ├── filtered_image_masks/
-    │   └── <slide_id>/                        # Generated binary masks
-    └── json_list/
-        └── <slide_id>_json.txt                # Index of annotated tile filenames
+    ├── cadd_json_files/<slide_id>/<batch>/<x>_<y>.json          # Per-tile CADD4MBC annotations
+    ├── filtered_images/<slide_id>/                              # Extracted WSI tiles (.jpg / .png)
+    ├── filtered_image_masks/<slide_id>/                         # Generated binary masks
+    └── json_list/<slide_id>_json.txt                            # Index of annotated tile filenames
 ```
 
 ---
 
-## Step-by-Step Guide
+## Dataset
 
-### Step 1 — Tile Extraction
+### KMIT Private Dataset
 
-Break the WSI `.tiff` into fixed-size tiles. Tiles are named by their grid position:
+75 breast cancer WSIs collected from Basavatarakam Indo-American Hospital and scanned by Tapadia Diagnostics Centre at 40× magnification. Each WSI is divided into batches of tiles for pathologist annotation via CADD4MBC.
 
-```
-{x}_{y}.png     →    e.g.   43_94.png   (column 43, row 94)
-```
+![CADD4MBC WSI Upload and Batches](Images/Fig1_CADD4MBC_WSI_Batches.png)
+*Fig. 1 — Uploaded WSI and tile batches in the CADD4MBC platform*
 
-Annotations from the CADD4MBC viewer are saved as per-tile JSON files matching this naming.
+Each tile is annotated directly by pathologists in the CADD4MBC viewer:
 
----
+![CADD4MBC Mitosis Annotation](Images/Fig2_CADD4MBC_Mitosis_Annotation.png)
+*Fig. 2 — Pathologist annotating mitotic figures on tiles*
 
-### Step 2 — Mask Generation
-
-`MaskGenerator-Copy1.ipynb` reads each CADD4MBC annotation JSON and generates a binary mask for the corresponding tile.
-
-Each JSON contains polygon point coordinates for annotated mitotic figures. The notebook:
-1. Loads the tile image and its annotation JSON
-2. Draws filled polygons onto a blank canvas using `cv2.fillPoly`
-3. Applies binary thresholding
-4. Saves the mask alongside the tile
+| Dataset | Size | Image Size | Tiles after Augmentation | Annotation |
+|---|---|---|---|---|
+| ICPR 12 | 2,994 | 512×512 | 4,367 | Strongly labelled (CSV) |
+| ICPR 14 | 2,400 | 512×512 | — | Weakly labelled (CSV) |
+| TUPAC | 2,650 | 512×512 | — | Weakly labelled (CSV) |
+| **KMIT Dataset** | **42,000** | **512×512** | **56,258** | **Strongly labelled (JSON)** |
 
 ---
 
-### Step 3 — Dataset Pipeline
+## Preprocessing
 
-`Pipeline_notebook_for_preparing_dataset-video-final.ipynb` handles the full multi-slide data organization:
+### Mask Generation
 
-- Scans annotation JSONs across slides (T98, T120, T121, T104, T118, ...)
-- Copies corresponding tile images to working directories
-- Converts polygon annotations into **COCO format** (bounding boxes + segmentation)
-- Builds `train.txt` / `test.txt` split files for Detectron2
+Annotation JSONs from CADD4MBC are used to generate binary ellipse masks using OpenCV. Annotations with very small ellipse areas are discarded to avoid noisy training samples.
 
-**Dataset scale:** 56,258 annotated tiles across multiple WSI slides.
+![Generated Mask and Ground Truth](Images/Fig3_Generated_Mask_and_Annotations.png)
+*Fig. 3 — Original image (left), generated binary mask (center), ground truth annotations (right)*
+
+### Annotation Format Conversion
+
+- **Faster R-CNN** → COCO JSON format (single combined file for all annotations)
+- **YOLOv5** → `.txt` format with `[class, x-center, y-center, width, height]` per line
+
+![COCO Format Annotation](Images/Fig4_COCO_Format_Annotation.png)
+*Fig. 4 — Sample COCO format annotation for mitotic figures*
 
 ---
 
-### Step 4 — Training (Faster R-CNN)
+## Models
 
-Training uses **Detectron2** with a pretrained **Faster R-CNN X-101-32x8d-FPN** backbone fine-tuned on the mitosis dataset.
+### Faster R-CNN
+Uses a **ResNeXt-101-32x8d + FPN** backbone pretrained on COCO. Three components:
+- **Backbone (ResNet-FPN):** Extracts multi-scale feature maps with skip connections to prevent gradient vanishing
+- **Region Proposal Network (RPN):** Generates and classifies anchor boxes for candidate mitosis regions
+- **ROI Pooling:** Converts variable-size proposals to fixed-size feature maps for the classifier
+
+### YOLOv5
+Single-stage detector requiring one forward pass. Uses:
+- **CSPNet** backbone for feature extraction
+- **PANnet** neck for multi-scale feature pyramids
+- **YOLO head** generating 3 feature map sizes (18×18, 36×36, 72×72) to handle mitoses of varying sizes
+
+---
+
+## Training
 
 ```bash
-# Launch Jupyter and open Mitosis_Final.ipynb
 jupyter notebook Mitosis_Final.ipynb
 ```
 
@@ -132,39 +151,32 @@ jupyter notebook Mitosis_Final.ipynb
 | Warmup iterations | 1,000 |
 | Max iterations | 5,000 |
 | Base LR | 0.001 |
-| Score threshold (eval) | 0.5 – 0.8 |
-| Output | `model_final.pth` |
-
-**Evaluation datasets:**
-- KMIT institutional dataset
-- MITOS-12 (public benchmark)
-- MITOS-14 (public benchmark)
-- Madhubushi dataset
+| Training tiles | 45,006 |
+| Testing tiles | 11,251 |
 
 ---
 
-### Step 5 — Inference & Evaluation
+## Results
 
-After training, the model is run tile-by-tile over the WSI. Custom IoU-based TP/FP/FN matching is used to compute metrics:
+![Single Mitosis Detection - Faster R-CNN](Images/Fig5_Single_Mitosis_Detection_FasterRCNN.png)
+*Fig. 5 — Individual mitotic cell detections with confidence scores*
 
-```python
-precision = TP / (TP + FP)
-recall    = TP / (TP + FN)
-F1        = 2 * precision * recall / (precision + recall)
-```
+![Mitosis Detection on Tiles - Faster R-CNN](Images/Fig6_Mitosis_Detection_on_Tiles_FasterRCNN.png)
+*Fig. 6 — Faster R-CNN bounding box predictions on a WSI tile*
 
-**Result: F1 = 84%** on the KMIT dataset.
+![YOLOv5 Detections on Full WSI](Images/Fig7_Mitosis_Detection_YOLOv5_WSI.png)
+*Fig. 7 — YOLOv5 mitosis detections (red dots) visualized across the full WSI in CADD4MBC*
 
-Predictions are visualized as bounding boxes overlaid on tiles, with confidence scores displayed.
+### Performance Summary
 
----
-
-### Step 6 — Web Platform (CADD4MBC)
-
-Detections are served through the **CADD4MBC** web-based imaging platform, which supports:
-- WSI upload and tile serving
-- Annotation viewing and editing
-- Overlay of model predictions on the slide viewer
+| Dataset | Training | Testing | Model | F1 | Recall | Precision | Training Time |
+|---|---|---|---|---|---|---|---|
+| ICPR12 | 3,304 | 1,063 | Faster R-CNN | 85.48 | 88.91 | 82.15 | 49 mins |
+| ICPR14 | — | 547 | Faster R-CNN | 81.46 | 87.89 | 76.52 | — |
+| TUPAC | — | 321 | Faster R-CNN | 82.15 | 81.56 | 81.69 | — |
+| KMIT | 45,006 | 11,251 | Faster R-CNN | 75.86 | 73.83 | 76.86 | 10h 46m |
+| KMIT | 45,006 | 11,251 | YOLOv5 (CPU) | 84.23 | 81.62 | 86.76 | 9h 12m |
+| KMIT | 45,006 | 11,251 | YOLOv5 (Distributed GPU) | **84.58** | 82.31 | 86.42 | **5h 28m** |
 
 ---
 
@@ -179,16 +191,6 @@ pip install opencv-python pillow numpy matplotlib tqdm pycocotools
 ```
 
 > GPU required. Tested with PyTorch 1.10, CUDA 10.2, Detectron2.
-
----
-
-## Results
-
-| Dataset | F1 Score |
-|---|---|
-| KMIT Dataset | **84%** |
-| MITOS-12 | *(see paper)* |
-| MITOS-14 | *(see paper)* |
 
 ---
 
@@ -216,6 +218,7 @@ If you use this work, please cite:
 
 - [Faster R-CNN — Ren et al., 2015](https://arxiv.org/abs/1506.01497)
 - [Detectron2 — Facebook AI Research](https://github.com/facebookresearch/detectron2)
+- [YOLOv5 — Ultralytics](https://github.com/ultralytics/yolov5)
 - [MITOS-12 / MITOS-14 Benchmarks](http://ludo17.free.fr/mitos_2012/)
 - Nottingham Histologic Grading System for breast cancer
 
